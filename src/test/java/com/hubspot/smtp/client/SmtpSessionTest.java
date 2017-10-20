@@ -1,5 +1,6 @@
 package com.hubspot.smtp.client;
 
+import static com.hubspot.smtp.client.SmtpSessionFactory.CHANNEL_KEY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
@@ -18,6 +19,7 @@ import java.util.stream.Collectors;
 
 import javax.net.ssl.SSLEngine;
 
+import io.netty.util.Attribute;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -102,6 +104,9 @@ public class SmtpSessionTest {
     unknown7BitContent = MessageContent.of(Unpooled.copiedBuffer(MESSAGE_BYTES), MessageContentEncoding.UNKNOWN);
 
     channel = mock(Channel.class);
+    Attribute attribute = mock(Attribute.class);
+    when(attribute.get()).thenReturn("123");
+    when(channel.attr(CHANNEL_KEY)).thenReturn(attribute);
     pipeline = mock(ChannelPipeline.class);
     responseHandler = mock(ResponseHandler.class);
 
@@ -109,7 +114,7 @@ public class SmtpSessionTest {
     responseFuture = new CompletableFuture<>();
     secondResponseFuture = new CompletableFuture<>();
     writeFuture = mock(ChannelFuture.class);
-    when(responseHandler.createResponseFuture(anyInt(), any())).thenReturn(responseFuture, secondResponseFuture);
+    when(responseHandler.createResponseFuture(anyString(), anyInt(), any())).thenReturn(responseFuture, secondResponseFuture);
 
     when(channel.pipeline()).thenReturn(pipeline);
     when(channel.alloc()).thenReturn(new PooledByteBufAllocator(false));
@@ -309,7 +314,7 @@ public class SmtpSessionTest {
     responseFuture.complete(Lists.newArrayList(responses));
 
     // 4 responses expected: one for the content, 3 for the requests
-    verify(responseHandler).createResponseFuture(eq(4), any());
+    verify(responseHandler).createResponseFuture(anyString(), eq(4), any());
 
     assertThat(future.isDone()).isTrue();
     assertThat(future.get().getResponses().size()).isEqualTo(responses.length);
@@ -324,7 +329,7 @@ public class SmtpSessionTest {
     session.sendPipelined(RCPT_REQUEST, DATA_REQUEST);
 
     // 1 response expected for each request
-    verify(responseHandler).createResponseFuture(eq(2), any());
+    verify(responseHandler).createResponseFuture(anyString(), eq(2), any());
   }
 
   @Test
@@ -500,7 +505,7 @@ public class SmtpSessionTest {
   @Test
   public void itDoesNotPipelineRsetUnlessSupportedByTheServer() {
     resetEhloExtensions();
-    when(responseHandler.createResponseFuture(anyInt(), any())).thenAnswer(a -> CompletableFuture.completedFuture(Lists.newArrayList(OK_RESPONSE)));
+    when(responseHandler.createResponseFuture(anyString(), anyInt(), any())).thenAnswer(a -> CompletableFuture.completedFuture(Lists.newArrayList(OK_RESPONSE)));
 
     session.send(ALICE, BOB, MessageContent.of(Unpooled.copiedBuffer(MESSAGE_BYTES))).join();
     session.send(ALICE, BOB, MessageContent.of(Unpooled.copiedBuffer(MESSAGE_BYTES))).join();
@@ -536,7 +541,7 @@ public class SmtpSessionTest {
   public void itSendsEmailsUsingChunkingIfItIsSupportedWithoutPipelining() throws Exception {
     setExtensions(Extension.CHUNKING);
 
-    when(responseHandler.createResponseFuture(anyInt(), any())).thenAnswer(a -> CompletableFuture.completedFuture(Lists.newArrayList(OK_RESPONSE)));
+    when(responseHandler.createResponseFuture(anyString(), anyInt(), any())).thenAnswer(a -> CompletableFuture.completedFuture(Lists.newArrayList(OK_RESPONSE)));
 
     CompletableFuture<SmtpClientResponse> future = session.send(ALICE, BOB, smtpContent);
 
@@ -559,7 +564,7 @@ public class SmtpSessionTest {
   public void itSendsEmailsUsingChunkingIfItIsSupportedWithoutPipeliningAndMultipleRecipients() throws Exception {
     setExtensions(Extension.CHUNKING);
 
-    when(responseHandler.createResponseFuture(anyInt(), any())).thenAnswer(a -> CompletableFuture.completedFuture(Lists.newArrayList(OK_RESPONSE)));
+    when(responseHandler.createResponseFuture(anyString(), anyInt(), any())).thenAnswer(a -> CompletableFuture.completedFuture(Lists.newArrayList(OK_RESPONSE)));
 
     CompletableFuture<SmtpClientResponse> future = session.send(ALICE, Lists.newArrayList(BOB, CAROL), smtpContent);
 
@@ -591,7 +596,7 @@ public class SmtpSessionTest {
     CompletableFuture<List<SmtpResponse>> future2 = new CompletableFuture<>();
     CompletableFuture<List<SmtpResponse>> future3 = new CompletableFuture<>();
 
-    when(responseHandler.createResponseFuture(anyInt(), any())).thenReturn(future1, future2, future3);
+    when(responseHandler.createResponseFuture(anyString(), anyInt(), any())).thenReturn(future1, future2, future3);
 
     session.send(ALICE, Collections.singleton(BOB), content);
 
@@ -633,7 +638,7 @@ public class SmtpSessionTest {
   public void itSendsEmailsUsingDataIfTheContentIs7BitWithoutPipeliningAndMultipleRecipients() throws Exception {
     resetEhloExtensions();
 
-    when(responseHandler.createResponseFuture(anyInt(), any())).thenAnswer(a -> CompletableFuture.completedFuture(Lists.newArrayList(OK_RESPONSE)));
+    when(responseHandler.createResponseFuture(anyString(), anyInt(), any())).thenAnswer(a -> CompletableFuture.completedFuture(Lists.newArrayList(OK_RESPONSE)));
 
     CompletableFuture<SmtpClientResponse> future = session.send(ALICE, Lists.newArrayList(BOB, CAROL), sevenBitContent);
 
@@ -773,7 +778,7 @@ public class SmtpSessionTest {
 
     responseFuture.complete(responses);
 
-    verify(responseHandler).createResponseFuture(eq(responsesExpected), any());
+    verify(responseHandler).createResponseFuture(anyString(), eq(responsesExpected), any());
 
     assertThat(future.isDone()).isTrue();
     assertThat(future.get().getResponses().size()).isEqualTo(responses.size());

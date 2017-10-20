@@ -33,7 +33,7 @@ import com.google.common.collect.Sets;
 import com.hubspot.smtp.messages.MessageContent;
 import com.hubspot.smtp.messages.MessageContentEncoding;
 import com.hubspot.smtp.utils.SmtpResponses;
-
+import com.sun.mail.util.MailLogger;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -41,6 +41,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.handler.codec.smtp.*;
 import io.netty.handler.codec.smtp.DefaultSmtpRequest;
 import io.netty.handler.codec.smtp.SmtpCommand;
 import io.netty.handler.codec.smtp.SmtpContent;
@@ -49,6 +50,23 @@ import io.netty.handler.codec.smtp.SmtpRequests;
 import io.netty.handler.codec.smtp.SmtpResponse;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.stream.ChunkedInput;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLSession;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
+import static com.hubspot.smtp.client.SmtpSessionFactory.CHANNEL_KEY;
+import static io.netty.handler.codec.smtp.LastSmtpContent.EMPTY_LAST_CONTENT;
 
 /**
  * An open connection to an SMTP server which can be used to send messages and other commands.
@@ -58,6 +76,7 @@ import io.netty.handler.stream.ChunkedInput;
  * <p>This class is thread-safe.
  */
 public class SmtpSession {
+  private static final Logger LOG = LoggerFactory.getLogger(SmtpSession.class);
   // https://tools.ietf.org/html/rfc2920#section-3.1
   // In particular, the commands RSET, MAIL FROM, SEND FROM, SOML FROM, SAML FROM,
   // and RCPT TO can all appear anywhere in a pipelined command group.
@@ -469,11 +488,10 @@ public class SmtpSession {
    */
   public CompletableFuture<SmtpClientResponse> send(SmtpRequest request) {
     Preconditions.checkNotNull(request);
-
     return applyOnExecutor(executeRequestInterceptor(config.getSendInterceptor(), request, () -> {
-      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(1, () -> createDebugString(request));
+      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(channel.attr(CHANNEL_KEY).get(), 1, () -> createDebugString(request));
+      LOG.info("{} Sending request: {} to channel {}", Thread.currentThread().getName(), request, channel);
       writeAndFlush(request);
-
       if (request.command().equals(SmtpCommand.EHLO)) {
         responseFuture = responseFuture.whenComplete((responses, ignored) -> {
           if (responses != null) {
@@ -485,6 +503,10 @@ public class SmtpSession {
 
       return responseFuture;
     }), this::wrapFirstResponse);
+  }
+
+  public boolean isActive() {
+    return channel.isOpen();
   }
 
   /**
@@ -506,8 +528,8 @@ public class SmtpSession {
     checkMessageSize(content.size());
 
     return applyOnExecutor(executeDataInterceptor(config.getSendInterceptor(), () -> {
-      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(1, () -> "message contents");
-
+      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(channel.attr(CHANNEL_KEY).get(), 1, () -> "message contents");
+      LOG.info("{} Message content: {} to channel {}", Thread.currentThread().getName(), content, channel);
       writeContent(content);
       channel.flush();
 
@@ -544,7 +566,7 @@ public class SmtpSession {
     }
 
     return applyOnExecutor(executeDataInterceptor(config.getSendInterceptor(), () -> {
-      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(1, () -> "BDAT message chunk");
+      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(channel.attr(CHANNEL_KEY).get(), 1, () -> "BDAT message chunk");
 
       String size = Integer.toString(data.readableBytes());
       if (isLast) {
@@ -604,7 +626,7 @@ public class SmtpSession {
 
     return applyOnExecutor(executePipelineInterceptor(config.getSendInterceptor(), Lists.newArrayList(requests), () -> {
       int expectedResponses = requests.length + (content == null ? 0 : 1);
-      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(expectedResponses, () -> createDebugString((Object[]) requests));
+      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(channel.attr(CHANNEL_KEY).get(), expectedResponses, () -> createDebugString((Object[]) requests));
 
       if (content != null) {
         writeContent(content);
@@ -690,14 +712,27 @@ public class SmtpSession {
     });
   }
 
+  public CompletableFuture<SmtpClientResponse> ntlmAuth(String ntdomain, String hostname, String username, String password) {
+    com.sun.mail.auth.Ntlm ntlm = new com.sun.mail.auth.Ntlm(ntdomain, hostname, username, password, new MailLogger(this.getClass(), "SmtpSession", true, System.out));
+    String msg1 = ntlm.generateType1Msg(0);
+    return send(new DefaultSmtpRequest("AUTH", "NTLM", (msg1.length() == 0 ? "=" : msg1))).thenCompose(r -> {
+      if (r.containsError()) {
+        return CompletableFuture.completedFuture(r);
+      } else {
+        String r1 = String.join("", r.getResponses().iterator().next().details()).trim();
+        String type3 = ntlm.generateType3Msg(r1);
+        return send(new DefaultSmtpRequest(type3));
+      }
+    });
+  }
+
   private CompletionStage<SmtpClientResponse> sendAuthLoginPassword(String password) {
     return applyOnExecutor(executeRequestInterceptor(config.getSendInterceptor(), new DefaultSmtpRequest(AUTH_COMMAND), () -> {
-      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(1, () -> "auth login password");
 
+      CompletableFuture<List<SmtpResponse>> responseFuture = responseHandler.createResponseFuture(channel.attr(CHANNEL_KEY).get(), 1, () -> "auth login password");
       String passwordResponse = encodeBase64(password) + CRLF;
       ByteBuf passwordBuffer = channel.alloc().buffer().writeBytes(passwordResponse.getBytes(StandardCharsets.UTF_8));
       writeAndFlush(passwordBuffer);
-
       return responseFuture;
     }), this::wrapFirstResponse);
   }
@@ -784,13 +819,11 @@ public class SmtpSession {
     if (executor == SmtpSessionFactoryConfig.DIRECT_EXECUTOR) {
       return eventLoopFuture.thenApply(mapper);
     }
-
     // use handleAsync to ensure exceptions and other callbacks are completed on the ExecutorService thread
     return eventLoopFuture.handleAsync((rs, e) -> {
       if (e != null) {
         throw Throwables.propagate(e);
       }
-
       return mapper.apply(rs);
     }, executor);
   }
@@ -905,7 +938,7 @@ public class SmtpSession {
     }
 
     private CompletableFuture<List<SmtpResponse>> createFuture(int expectedResponses, Object[] objects) {
-      return responseHandler.createResponseFuture(expectedResponses, () -> createDebugString(objects));
+      return responseHandler.createResponseFuture(channel.attr(CHANNEL_KEY).get(), expectedResponses, () -> createDebugString(objects));
     }
   }
 

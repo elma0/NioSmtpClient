@@ -1,15 +1,7 @@
 package com.hubspot.smtp.client;
 
-import java.time.Duration;
-import java.util.List;
-import java.util.Optional;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.google.common.collect.Lists;
 import com.hubspot.smtp.utils.SmtpResponses;
-
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.smtp.DefaultSmtpRequest;
@@ -17,6 +9,14 @@ import io.netty.handler.codec.smtp.SmtpCommand;
 import io.netty.handler.codec.smtp.SmtpResponse;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.Optional;
+
+import static com.hubspot.smtp.client.SmtpSessionFactory.CHANNEL_KEY;
 
 class KeepAliveHandler extends IdleStateHandler {
   private static final Logger LOG = LoggerFactory.getLogger(KeepAliveHandler.class);
@@ -44,7 +44,7 @@ class KeepAliveHandler extends IdleStateHandler {
       return;
     }
 
-    Optional<String> debugString = responseHandler.getPendingResponseDebugString();
+    Optional<String> debugString = responseHandler.getPendingResponseDebugString(ctx.channel().attr(CHANNEL_KEY).get());
     if (debugString.isPresent()) {
       LOG.warn("[{}] Waiting for a response to [{}], will not send a NOOP to keep the connection alive", connectionId, debugString.get());
     } else {

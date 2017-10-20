@@ -1,57 +1,11 @@
 package com.hubspot.smtp;
 
-import static io.netty.handler.codec.smtp.SmtpCommand.DATA;
-import static io.netty.handler.codec.smtp.SmtpCommand.EHLO;
-import static io.netty.handler.codec.smtp.SmtpCommand.MAIL;
-import static io.netty.handler.codec.smtp.SmtpCommand.QUIT;
-import static io.netty.handler.codec.smtp.SmtpCommand.RCPT;
-import static io.netty.handler.codec.smtp.SmtpCommand.RSET;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
-
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.util.EnumSet;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
-
-import javax.net.ssl.SSLEngine;
-
-import org.apache.james.protocols.api.Encryption;
-import org.apache.james.protocols.api.logger.Logger;
-import org.apache.james.protocols.netty.NettyServer;
-import org.apache.james.protocols.smtp.MailEnvelope;
-import org.apache.james.protocols.smtp.SMTPConfigurationImpl;
-import org.apache.james.protocols.smtp.SMTPProtocol;
-import org.apache.james.protocols.smtp.SMTPProtocolHandlerChain;
-import org.apache.james.protocols.smtp.SMTPSession;
-import org.apache.james.protocols.smtp.hook.AuthHook;
-import org.apache.james.protocols.smtp.hook.HookResult;
-import org.apache.james.protocols.smtp.hook.MailParametersHook;
-import org.apache.james.protocols.smtp.hook.MessageHook;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Ignore;
-import org.junit.Test;
-
 import com.google.common.collect.Lists;
 import com.google.common.io.ByteSource;
 import com.google.common.io.CharStreams;
-import com.hubspot.smtp.client.Extension;
-import com.hubspot.smtp.client.SmtpClientResponse;
-import com.hubspot.smtp.client.SmtpSession;
-import com.hubspot.smtp.client.SmtpSessionConfig;
-import com.hubspot.smtp.client.SmtpSessionFactory;
-import com.hubspot.smtp.client.SmtpSessionFactoryConfig;
+import com.hubspot.smtp.client.*;
 import com.hubspot.smtp.messages.MessageContent;
 import com.hubspot.smtp.messages.MessageContentEncoding;
-
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
@@ -61,6 +15,33 @@ import io.netty.handler.codec.smtp.SmtpCommand;
 import io.netty.handler.codec.smtp.SmtpRequest;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import org.apache.james.protocols.api.Encryption;
+import org.apache.james.protocols.api.logger.Logger;
+import org.apache.james.protocols.netty.NettyServer;
+import org.apache.james.protocols.smtp.*;
+import org.apache.james.protocols.smtp.hook.AuthHook;
+import org.apache.james.protocols.smtp.hook.HookResult;
+import org.apache.james.protocols.smtp.hook.MailParametersHook;
+import org.apache.james.protocols.smtp.hook.MessageHook;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Test;
+
+import javax.net.ssl.SSLEngine;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.nio.charset.StandardCharsets;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
+import static io.netty.handler.codec.smtp.SmtpCommand.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class IntegrationTest {
   private static final long MAX_MESSAGE_SIZE = 1234000L;
@@ -69,9 +50,9 @@ public class IntegrationTest {
   private static final String RETURN_PATH = "return-path@example.com";
   private static final String RECIPIENT = "sender@example.com";
   private static final String MESSAGE_DATA = "From: <from@example.com>\r\n" +
-      "To: <recipient@example.com>\r\n" +
-      "Subject: test mail\r\n\r\n" +
-      "Hello!\r\n";
+          "To: <recipient@example.com>\r\n" +
+          "Subject: test mail\r\n\r\n" +
+          "Hello!\r\n";
 
   private static final NioEventLoopGroup EVENT_LOOP_GROUP = new NioEventLoopGroup();
 
@@ -89,7 +70,7 @@ public class IntegrationTest {
     serverAddress = new InetSocketAddress(getFreePort());
     serverLog = mock(Logger.class);
     smtpServer = createAndStartSmtpServer(serverLog, serverAddress);
-    sessionFactory = new SmtpSessionFactory(SmtpSessionFactoryConfig.nonProductionConfig().withSslEngineSupplier(this::createInsecureSSLEngine));
+    sessionFactory = new SmtpSessionFactory(SmtpSessionFactoryConfig.nonProductionConfig().withSslEngineSupplier(this::createInsecureSSLEngine), getDefaultConfig().withDisabledExtensions(EnumSet.of(Extension.CHUNKING)));
 
     when(serverLog.isDebugEnabled()).thenReturn(true);
   }
@@ -126,16 +107,16 @@ public class IntegrationTest {
   @Test
   public void itCanParseTheEhloResponse() throws Exception {
     connect()
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> {
-          assertThat(r.getSession().getEhloResponse().isSupported(Extension.PIPELINING)).isTrue();
-          assertThat(r.getSession().getEhloResponse().isSupported(Extension.EIGHT_BIT_MIME)).isTrue();
-          assertThat(r.getSession().getEhloResponse().isSupported(Extension.SIZE)).isTrue();
-          assertThat(r.getSession().getEhloResponse().getMaxMessageSize()).contains(MAX_MESSAGE_SIZE);
-          return r.getSession().send(req(QUIT));
-        })
-        .thenCompose(r -> assertSuccess(r).close())
-        .get();
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> {
+              assertThat(r.getSession().getEhloResponse().isSupported(Extension.PIPELINING)).isTrue();
+              assertThat(r.getSession().getEhloResponse().isSupported(Extension.EIGHT_BIT_MIME)).isTrue();
+              assertThat(r.getSession().getEhloResponse().isSupported(Extension.SIZE)).isTrue();
+              assertThat(r.getSession().getEhloResponse().getMaxMessageSize()).contains(MAX_MESSAGE_SIZE);
+              return r.getSession().send(req(QUIT));
+            })
+            .thenCompose(r -> assertSuccess(r).close())
+            .get();
   }
 
   @Test
@@ -143,14 +124,14 @@ public class IntegrationTest {
     requireAuth = true;
 
     connect()
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> {
-          assertThat(r.getSession().getEhloResponse().isSupported(Extension.AUTH)).isTrue();
-          assertThat(r.getSession().getEhloResponse().isAuthPlainSupported()).isTrue();
-          return r.getSession().authPlain(CORRECT_USERNAME, CORRECT_PASSWORD);
-        })
-        .thenCompose(r -> assertSuccess(r).close())
-        .get();
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> {
+              assertThat(r.getSession().getEhloResponse().isSupported(Extension.AUTH)).isTrue();
+              assertThat(r.getSession().getEhloResponse().isAuthPlainSupported()).isTrue();
+              return r.getSession().authPlain(CORRECT_USERNAME, CORRECT_PASSWORD);
+            })
+            .thenCompose(r -> assertSuccess(r).close())
+            .get();
   }
 
   @Test
@@ -158,27 +139,27 @@ public class IntegrationTest {
     requireAuth = true;
 
     connect()
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> {
-          assertThat(r.getSession().getEhloResponse().isSupported(Extension.AUTH)).isTrue();
-          assertThat(r.getSession().getEhloResponse().isAuthLoginSupported()).isTrue();
-          return r.getSession().authLogin(CORRECT_USERNAME, CORRECT_PASSWORD);
-        })
-        .thenCompose(r -> assertSuccess(r).close())
-        .get();
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> {
+              assertThat(r.getSession().getEhloResponse().isSupported(Extension.AUTH)).isTrue();
+              assertThat(r.getSession().getEhloResponse().isAuthLoginSupported()).isTrue();
+              return r.getSession().authLogin(CORRECT_USERNAME, CORRECT_PASSWORD);
+            })
+            .thenCompose(r -> assertSuccess(r).close())
+            .get();
   }
 
   @Test
   public void itCanSendAnEmail() throws Exception {
     connect()
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> assertSuccess(r).send(req(MAIL, "FROM:<" + RETURN_PATH + ">", "SIZE=" + MESSAGE_DATA.length())))
-        .thenCompose(r -> assertSuccess(r).send(req(RCPT, "TO:<" + RECIPIENT + ">")))
-        .thenCompose(r -> assertSuccess(r).send(req(DATA)))
-        .thenCompose(r -> assertSuccess(r).send(createMessageContent()))
-        .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
-        .thenCompose(r -> assertSuccess(r).close())
-        .get();
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> assertSuccess(r).send(req(MAIL, "FROM:<" + RETURN_PATH + ">", "SIZE=" + MESSAGE_DATA.length())))
+            .thenCompose(r -> assertSuccess(r).send(req(RCPT, "TO:<" + RECIPIENT + ">")))
+            .thenCompose(r -> assertSuccess(r).send(req(DATA)))
+            .thenCompose(r -> assertSuccess(r).send(createMessageContent()))
+            .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
+            .thenCompose(r -> assertSuccess(r).close())
+            .get();
 
     assertThat(receivedMails.size()).isEqualTo(1);
     MailEnvelope mail = receivedMails.get(0);
@@ -192,11 +173,11 @@ public class IntegrationTest {
   @Test
   public void itCanSendEmailsWithMultipleRecipients() throws Exception {
     connect(getDefaultConfig().withDisabledExtensions(EnumSet.of(Extension.CHUNKING)))
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> assertSuccess(r).send(RETURN_PATH, Lists.newArrayList("a@example.com", "b@example.com"), createMessageContent()))
-        .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
-        .thenCompose(r -> assertSuccess(r).close())
-        .get();
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> assertSuccess(r).send(RETURN_PATH, Lists.newArrayList("a@example.com", "b@example.com"), createMessageContent()))
+            .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
+            .thenCompose(r -> assertSuccess(r).close())
+            .get();
 
     assertThat(receivedMails.size()).isEqualTo(1);
     MailEnvelope mail = receivedMails.get(0);
@@ -230,11 +211,11 @@ public class IntegrationTest {
     receivedMails.clear();
 
     connect(config)
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> assertSuccess(r).send(RETURN_PATH, RECIPIENT, createMessageContent()))
-        .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
-        .thenCompose(r -> assertSuccess(r).close())
-        .get();
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> assertSuccess(r).send(RETURN_PATH, RECIPIENT, createMessageContent()))
+            .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
+            .thenCompose(r -> assertSuccess(r).close())
+            .get();
 
     assertThat(receivedMails.size()).isEqualTo(1);
     MailEnvelope mail = receivedMails.get(0);
@@ -250,14 +231,14 @@ public class IntegrationTest {
     MessageContent messageContent = MessageContent.of(ByteSource.wrap(messageText.getBytes()), MessageContentEncoding.SEVEN_BIT);
 
     connect()
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> assertSuccess(r).send(req(MAIL, "FROM:<" + RETURN_PATH + ">")))
-        .thenCompose(r -> assertSuccess(r).send(req(RCPT, "TO:<" + RECIPIENT + ">")))
-        .thenCompose(r -> assertSuccess(r).send(req(DATA)))
-        .thenCompose(r -> assertSuccess(r).send(messageContent))
-        .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
-        .thenCompose(r -> assertSuccess(r).close())
-        .get();
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> assertSuccess(r).send(req(MAIL, "FROM:<" + RETURN_PATH + ">")))
+            .thenCompose(r -> assertSuccess(r).send(req(RCPT, "TO:<" + RECIPIENT + ">")))
+            .thenCompose(r -> assertSuccess(r).send(req(DATA)))
+            .thenCompose(r -> assertSuccess(r).send(messageContent))
+            .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
+            .thenCompose(r -> assertSuccess(r).close())
+            .get();
 
     assertThat(receivedMails.size()).isEqualTo(1);
     MailEnvelope mail = receivedMails.get(0);
@@ -275,13 +256,13 @@ public class IntegrationTest {
   @Ignore("This can hang on Linux because our James chunking implementation isn't great")
   public void itCanSendMessagesWithChunking() throws Exception {
     connect()
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> assertSuccess(r).send(req(MAIL, "FROM:<" + RETURN_PATH + ">")))
-        .thenCompose(r -> assertSuccess(r).send(req(RCPT, "TO:<" + RECIPIENT + ">")))
-        .thenCompose(r -> assertSuccess(r).sendChunk(createBuffer(MESSAGE_DATA), true))
-        .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
-        .thenCompose(r -> assertSuccess(r).close())
-        .get();
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> assertSuccess(r).send(req(MAIL, "FROM:<" + RETURN_PATH + ">")))
+            .thenCompose(r -> assertSuccess(r).send(req(RCPT, "TO:<" + RECIPIENT + ">")))
+            .thenCompose(r -> assertSuccess(r).sendChunk(createBuffer(MESSAGE_DATA), true))
+            .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
+            .thenCompose(r -> assertSuccess(r).close())
+            .get();
 
     assertThat(receivedMails.size()).isEqualTo(1);
     MailEnvelope mail = receivedMails.get(0);
@@ -294,15 +275,15 @@ public class IntegrationTest {
   @Test
   public void itCanUseStartTlsToSendAnEmail() throws Exception {
     connect()
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> assertSuccess(r).startTls())
-        .thenCompose(r -> assertSuccess(r).send(req(MAIL, "FROM:<" + RETURN_PATH + ">")))
-        .thenCompose(r -> assertSuccess(r).send(req(RCPT, "TO:<" + RECIPIENT + ">")))
-        .thenCompose(r -> assertSuccess(r).send(req(DATA)))
-        .thenCompose(r -> assertSuccess(r).send(createMessageContent()))
-        .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
-        .thenCompose(r -> assertSuccess(r).close())
-        .get();
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> assertSuccess(r).startTls())
+            .thenCompose(r -> assertSuccess(r).send(req(MAIL, "FROM:<" + RETURN_PATH + ">")))
+            .thenCompose(r -> assertSuccess(r).send(req(RCPT, "TO:<" + RECIPIENT + ">")))
+            .thenCompose(r -> assertSuccess(r).send(req(DATA)))
+            .thenCompose(r -> assertSuccess(r).send(createMessageContent()))
+            .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
+            .thenCompose(r -> assertSuccess(r).close())
+            .get();
 
     assertThat(receivedMails.size()).isEqualTo(1);
   }
@@ -311,8 +292,8 @@ public class IntegrationTest {
   public void itClosesTheConnectionIfTheTlsHandshakeFails() throws Exception {
     // not using the insecure trust manager here so the connection will fail
     CompletableFuture<SmtpClientResponse> f = connect(SmtpSessionConfig.forRemoteAddress(serverAddress))
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-        .thenCompose(r -> assertSuccess(r).startTls());
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
+            .thenCompose(r -> assertSuccess(r).startTls());
 
     assertThat(f.isCompletedExceptionally());
   }
@@ -321,8 +302,8 @@ public class IntegrationTest {
   public void itCanSendWithPipelining() throws Exception {
     // connect and send the initial message metadata
     CompletableFuture<SmtpClientResponse> future = connect()
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "example.com")))
-        .thenCompose(r -> assertSuccess(r).sendPipelined(req(MAIL, "FROM:<return-path@example.com>"), req(RCPT, "TO:<person1@example.com>"), req(DATA)));
+            .thenCompose(r -> assertSuccess(r).send(req(EHLO, "example.com")))
+            .thenCompose(r -> assertSuccess(r).sendPipelined(req(MAIL, "FROM:<return-path@example.com>"), req(RCPT, "TO:<person1@example.com>"), req(DATA)));
 
     // send the data for the current message and the metadata for the next one, nine times
     for (int i = 1; i < 10; i++) {
@@ -332,46 +313,10 @@ public class IntegrationTest {
 
     // finally send the data for the tenth message and quit
     future.thenCompose(r -> assertSuccess(r).sendPipelined(createMessageContent(), req(QUIT)))
-        .thenCompose(r -> assertSuccess(r).close())
-        .join();
+            .thenCompose(r -> assertSuccess(r).close())
+            .join();
 
     assertThat(receivedMails.size()).isEqualTo(10);
-  }
-
-  @Test
-  public void itCanSendMultipleEmailsAtOnce() throws Exception {
-    List<CompletableFuture<Void>> futures = Lists.newArrayList();
-
-    Executor executor = Executors.newFixedThreadPool(50);
-
-    // Don't use chunking because our James implementation is naive
-    SmtpSessionFactory factory = new SmtpSessionFactory(SmtpSessionFactoryConfig.nonProductionConfig().withExecutor(executor));
-
-    SmtpSessionConfig pipeliningConfig = getDefaultConfig().withDisabledExtensions(EnumSet.of(Extension.CHUNKING));
-    SmtpSessionConfig nonPipeliningConfig = getDefaultConfig().withDisabledExtensions(EnumSet.of(Extension.CHUNKING, Extension.PIPELINING));
-
-    for (int i = 0; i < 100; i++) {
-      futures.add(factory.connect(i % 2 == 0 ? pipeliningConfig : nonPipeliningConfig)
-          .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")))
-          .thenCompose(r -> assertSuccess(r).send(RETURN_PATH, RECIPIENT, createMessageContent()))
-          .thenCompose(r -> assertSuccess(r).send(RETURN_PATH, RECIPIENT, createMessageContent()))
-          .thenCompose(r -> assertSuccess(r).send(req(QUIT)))
-          .thenCompose(r -> assertSuccess(r).close()));
-    }
-
-    CompletableFuture.allOf(futures.toArray(new CompletableFuture[futures.size()])).get();
-
-    assertThat(receivedMails.size()).isEqualTo(200);
-  }
-
-  @Test
-  public void itSendsKeepAliveCommands() throws Exception {
-    connect(SmtpSessionConfig.forRemoteAddress(serverAddress).withKeepAliveTimeout(Duration.ofSeconds(1)))
-        .thenCompose(r -> assertSuccess(r).send(req(EHLO, "hubspot.com")));
-
-    Thread.sleep(3000);
-
-    verify(serverLog, atLeast(2)).debug(endsWith("received: NOOP"));
   }
 
   private String readContents(MailEnvelope mail) throws IOException {
@@ -394,17 +339,17 @@ public class IntegrationTest {
   private SSLEngine createInsecureSSLEngine() {
     try {
       return SslContextBuilder
-          .forClient()
-          .trustManager(InsecureTrustManagerFactory.INSTANCE)
-          .build()
-          .newEngine(PooledByteBufAllocator.DEFAULT);
+              .forClient()
+              .trustManager(InsecureTrustManagerFactory.INSTANCE)
+              .build()
+              .newEngine(PooledByteBufAllocator.DEFAULT);
     } catch (Exception e) {
       throw new RuntimeException("Could not create SSLEngine", e);
     }
   }
 
   private CompletableFuture<SmtpClientResponse> connect(SmtpSessionConfig config) {
-    return sessionFactory.connect(config);
+    return sessionFactory.connect();
   }
 
   private static SmtpRequest req(SmtpCommand command, CharSequence... arguments) {
