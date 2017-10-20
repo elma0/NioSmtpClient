@@ -41,6 +41,24 @@ development. When we do, the first version will be:
   - Share objects when possible
   - Use Netty ByteBuf allocators when possible
 
+## Usage
+```java
+AsyncEmailClient asyncEmailClient = new AsyncEmailClient("domain.com",
+                                                    "host.com",
+                                                    "test",
+                                                    "test",
+                                                    25,
+                                                    10000);
+MimeMessage mimeMessage = new MessageBuilder(asyncEmailClient)
+                .addTo("to@host.com")
+                .setFrom("from@host.com")
+                .setSubject("test mail")
+                .setText("Hello world")
+                .getMimeMessage();
+asyncEmailClient.send(mimeMessage);
+```
+
+
 ## License
 
 Apache 2.0
